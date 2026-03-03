@@ -5,15 +5,35 @@
 
 ---
 
+## Tech Stack
+
+| Layer              | Technology                        | Purpose                                      |
+|--------------------|-----------------------------------|----------------------------------------------|
+| **Backend**        | Python 3.11+, FastAPI, Uvicorn    | Async HTTP + WebSocket server                |
+| **Voice AI**       | OpenAI Realtime API               | STT + LLM + TTS in one WebSocket session     |
+| **Real-time comm** | WebSockets                        | Full-duplex audio + control message channel  |
+| **Session state**  | Python in-memory dict             | Single-process session storage, no DB needed |
+| **Frontend**       | Vite + React 18, TypeScript, Tailwind CSS | SPA framework, fast HMR dev server    |
+| **Audio (browser)**| Web Audio API + AudioWorklet      | Low-latency mic capture and playback         |
+| **VAD**            | @ricky0123/vad-web                | Client-side voice activity detection         |
+| **Client state**   | Zustand                           | Lightweight React state management           |
+| **Config**         | pydantic-settings                 | Typed settings from env vars                 |
+| **Validation**     | Pydantic (backend), Zod (frontend)| WS message schema validation                 |
+| **Infra**          | Docker, Docker Compose            | Containerised dev environment (2 services)   |
+| **Testing**        | pytest, httpx, vitest             | Unit + integration tests                     |
+| **Logging**        | Python `logging` + JSON formatter | Structured observability                     |
+
+---
+
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
 2. [Backend Architecture](#2-backend-architecture)
-3. [Voice Pipeline & Optimistic Execution](#3-voice-pipeline--optimistic-execution)
+3. [Voice Pipeline](#3-voice-pipeline)
 4. [WebSocket Protocol](#4-websocket-protocol)
 5. [Frontend Architecture](#5-frontend-architecture)
-6. [Session & State (Redis)](#6-session--state-redis)
-7. [AI Orchestration (LangGraph)](#7-ai-orchestration-langgraph)
+6. [Session & State (In-Memory)](#6-session--state-in-memory)
+7. [AI Orchestration (OpenAI Realtime API)](#7-ai-orchestration-openai-realtime-api)
 8. [Infrastructure](#8-infrastructure)
 9. [Design Decisions](#9-design-decisions)
 10. [Observability](#10-observability)
@@ -28,13 +48,16 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        BROWSER (Next.js)                            │
+│                   BROWSER (Vite + React + Tailwind)                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────┐   │
 │  │ AudioWorklet │  │   UI State   │  │    Zustand Store        │   │
 │  │  Capture /   │  │   Machine    │  │  (session, transcript,  │   │
 │  │  Playback    │  │              │  │   status)               │   │
 │  └──────┬───────┘  └──────────────┘  └─────────────────────────┘   │
-│         │                                                           │
+│  ┌──────┴───────┐                                                   │
+│  │  VAD         │  (client-side voice activity detection)           │
+│  │  (@ricky0123)│                                                   │
+│  └──────┬───────┘                                                   │
 │         │  WebSocket (binary audio + JSON control)                  │
 └─────────┼───────────────────────────────────────────────────────────┘
           │
@@ -42,34 +65,32 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     BACKEND (FastAPI + Asyncio)                      │
 │                                                                     │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
-│  │    WS    │───▶│   STT    │───▶│   LLM    │───▶│  TTS Buffer  │  │
-│  │ Handler  │    │  Stage   │    │  Stage   │    │   + Stream   │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────────┘  │
-│       │                                                │            │
-│       │           ┌──────────────────────┐             │            │
-│       └──────────▶│   Session Manager    │◀────────────┘            │
-│                   └──────────┬───────────┘                          │
-│                              │                                      │
-└──────────────────────────────┼──────────────────────────────────────┘
-                               │
-                               ▼
-                   ┌───────────────────────┐
-                   │        Redis          │
-                   │  (session + history)  │
-                   └───────────────────────┘
+│  ┌──────────┐              ┌──────────────────────────────────────┐ │
+│  │    WS    │─────────────▶│         realtime-client.py          │ │
+│  │ Handler  │◀─────────────│   (proxy audio ↔ OpenAI session)   │ │
+│  └──────────┘              └──────────────────┬───────────────────┘ │
+│       │                                       │                     │
+│       │           ┌──────────────────────┐    │                     │
+│       └──────────▶│   Session Store      │    │                     │
+│                   │  (in-memory dict)    │    │                     │
+│                   └──────────────────────┘    │                     │
+└───────────────────────────────────────────────┼─────────────────────┘
+                                                │
+                                                ▼
+                              ┌─────────────────────────────┐
+                              │   OpenAI Realtime API       │
+                              │  (STT + LLM + TTS, one WS)  │
+                              └─────────────────────────────┘
 ```
 
-### Data Flow (8 Steps)
+### Data Flow (6 Steps)
 
-1. **Capture** — Browser AudioWorklet captures mic input as PCM chunks.
-2. **Stream** — Audio chunks sent over WebSocket as binary frames.
-3. **Transcribe** — Backend STT stage converts audio → text via streaming STT provider.
-4. **Orchestrate** — Transcript forwarded to LangGraph agent for intent resolution + tool calls.
-5. **Generate** — LLM streams response tokens incrementally.
-6. **Synthesize (optimistic)** — TTS begins on partial token buffer *before* full LLM response completes.
-7. **Deliver** — TTS audio chunks streamed back over WebSocket as binary frames.
-8. **Playback** — Browser AudioWorklet queues and plays audio chunks in order.
+1. **Capture** — Browser AudioWorklet captures mic input as PCM chunks; VAD detects speech start/end.
+2. **Stream** — Audio chunks sent over WebSocket as binary frames; `audio.stop` sent on silence.
+3. **Proxy** — Backend `realtime-client.py` forwards audio to OpenAI Realtime API over a server-side WebSocket.
+4. **Generate** — OpenAI Realtime API transcribes, generates response, and synthesizes speech — all in one session.
+5. **Deliver** — Realtime API streams audio back to backend; backend forwards to client as binary frames.
+6. **Playback** — Browser AudioWorklet queues and plays audio chunks in order.
 
 ---
 
@@ -83,157 +104,119 @@ backend/
 ├── config.py                   # Settings (pydantic-settings)
 ├── ws/
 │   ├── handler.py              # WebSocket connection lifecycle
-│   ├── message-types.py        # Protocol message definitions
-│   └── barge-in.py             # Barge-in detection + cancellation
+│   └── message-types.py        # Protocol message definitions (Pydantic)
 ├── pipeline/
-│   ├── stt-stage.py            # Speech-to-text async stage
-│   ├── llm-stage.py            # LLM orchestration async stage
-│   └── tts-stage.py            # Text-to-speech async stage
+│   └── realtime-client.py      # OpenAI Realtime API proxy (async)
 ├── session/
-│   ├── manager.py              # Session create/read/expire
-│   └── redis-client.py         # Redis connection pool
-├── agents/
-│   ├── graph.py                # LangGraph agent definition
-│   └── tools.py                # Tool implementations
+│   └── store.py                # In-memory session dict + asyncio TTL
 ├── observability/
 │   ├── logger.py               # Structured JSON logger
-│   ├── metrics.py              # Timing + counters
-│   └── health.py               # Health check endpoint
+│   └── health.py               # GET /health endpoint
 └── tests/
     ├── test_ws_handler.py
-    ├── test_pipeline.py
     └── test_session.py
 ```
 
 ### WebSocket Handler Design
 
-Each WebSocket connection spawns 3 concurrent asyncio tasks linked via `asyncio.Queue`:
+Each WebSocket connection spawns two linked asyncio tasks:
 
 ```
-                  asyncio.Queue          asyncio.Queue
-  ┌─────────┐    (audio_in)    ┌─────┐   (tokens)    ┌─────────┐
-  │ STT     │◀────────────────▶│ LLM │──────────────▶│ TTS     │
-  │ Stage   │                  │Stage│               │ Stage   │
-  └─────────┘                  └─────┘               └─────────┘
-       ▲                                                  │
-       │  binary frames                    binary frames  │
-       │                                                  ▼
-  ┌────────────────────────────────────────────────────────────┐
-  │                    WebSocket Connection                     │
-  └────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │                    WebSocket Connection                       │
+  └───────────────┬──────────────────────────────────────────────┘
+                  │
+        ┌─────────▼──────────┐
+        │    ws/handler.py   │
+        │  - auth/session    │
+        │  - route messages  │
+        └─────────┬──────────┘
+                  │
+        ┌─────────▼──────────────────┐
+        │  pipeline/realtime-        │
+        │  client.py                 │
+        │  - open OpenAI session     │
+        │  - pipe audio in/out       │
+        │  - handle tool calls       │
+        └────────────────────────────┘
 ```
 
-- **STT Stage** — Reads binary audio from WS, forwards to STT provider, emits transcript events.
-- **LLM Stage** — Receives final/partial transcripts, invokes LangGraph agent, streams tokens.
-- **TTS Stage** — Buffers tokens to sentence boundaries, sends to TTS provider, streams audio back to WS.
+- **handler.py** — Manages connection lifecycle, reads client messages, routes to realtime client.
+- **realtime-client.py** — Maintains a server-side WebSocket to OpenAI Realtime API. Streams audio in both directions. Handles `response.function_call` events for tool execution.
 
-All stages run concurrently per connection. Cancellation propagates via `asyncio.Event` (e.g., barge-in).
+All I/O is async. Each connection is isolated — no shared mutable state between connections.
 
 ---
 
-## 3. Voice Pipeline & Optimistic Execution
+## 3. Voice Pipeline
 
-### 4-Stage Pipeline
+### Overview
 
 ```
-  User Speech         Transcript          Token Stream        Audio Stream
-       │                  │                    │                    │
-       ▼                  ▼                    ▼                    ▼
-  ┌─────────┐      ┌───────────┐      ┌──────────────┐      ┌──────────┐
-  │  STT    │─────▶│   LLM     │─────▶│   Buffer     │─────▶│   TTS    │
-  │ ~200ms  │      │  ~400ms   │      │   Strategy   │      │  ~300ms  │
-  └─────────┘      └───────────┘      └──────────────┘      └──────────┘
+  User Speech              OpenAI Realtime API              Assistant Audio
+       │                           │                               │
+       ▼                           ▼                               ▼
+  ┌─────────┐     proxy      ┌───────────┐     proxy        ┌──────────┐
+  │  Client │───────────────▶│  Realtime │────────────────▶│  Client  │
+  │  Audio  │  (PCM binary)  │   API     │  (PCM binary)   │  Audio   │
+  └─────────┘                └───────────┘                  └──────────┘
+      ~200ms (VAD)             ~400ms (TTFT)                   ~300ms (TTS)
 ```
-
-### Buffer Strategy
-
-The buffer sits between LLM streaming output and TTS input. It accumulates tokens and flushes to TTS at natural boundaries:
-
-- **Sentence boundary** — flush on `.` `!` `?` followed by whitespace.
-- **Clause boundary** — flush on `,` `;` `:` if buffer exceeds ~15 tokens (prevents long pauses).
-- **Max buffer** — force-flush at 30 tokens regardless of punctuation.
-- **End of response** — flush remaining tokens immediately.
-
-This "optimistic" approach starts TTS synthesis on the *first sentence* while the LLM is still generating subsequent sentences, eliminating wait-for-complete-response latency.
 
 ### Latency Budget (~900ms target, <1200ms ceiling)
 
-| Stage       | Target  | Notes                                      |
-|-------------|---------|---------------------------------------------|
-| STT         | ~200ms  | Streaming; partial results available early  |
-| LLM (TTFT) | ~400ms  | Time to first token; model-dependent        |
-| Buffer fill | ~50ms   | First sentence boundary reached             |
-| TTS         | ~250ms  | Streaming; first audio chunk returned       |
-| **Total**   | **~900ms** | First audible response from user's end-of-speech |
+| Stage             | Target     | Notes                                           |
+|-------------------|------------|-------------------------------------------------|
+| VAD (client)      | ~200ms     | Detects end of speech, fires `audio.stop`       |
+| Realtime API TTFT | ~400ms     | Time to first audio token from OpenAI           |
+| Audio delivery    | ~300ms     | Streaming; first chunk reaches browser          |
+| **Total**         | **~900ms** | First audible response from user's end-of-speech|
 
-### Optimistic Execution Flow
+### Optimistic Audio Streaming
+
+The OpenAI Realtime API streams synthesized speech incrementally as it generates the response — it does not wait for the full response to complete before sending audio. This is equivalent to optimistic TTS execution, handled server-side by the API with no custom buffer logic required in the backend.
 
 ```
 Time ──────────────────────────────────────────────────────────▶
 
 User speaking ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-STT streaming        ░░░████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-LLM streaming                 ░░░██████████████░░░░░░░░░░░░░░░░
-Buffer                             ░░██░░░░░░██░░░░░░██░░░░░░░░
-TTS streaming                         ░░████████░░░░░░░████████░
-User hears                               ░░██████████████████████
+VAD fires            ░░░░░████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+Realtime API                 ░░░░██████████████░░░░░░░░░░░░░░░░░
+Audio streamed back               ░░░░░████████████████████████░
+User hears                              ░░░██████████████████████
 
-                              ▲                ▲
-                     first token        first audio chunk
-                     from LLM          reaches browser
+                                   ▲              ▲
+                              first audio      response
+                              chunk sent       complete
 ```
 
 ---
 
 ## 4. WebSocket Protocol
 
-All messages are JSON-encoded text frames unless noted. Audio is sent as binary frames.
+All control messages are JSON text frames. Audio is binary frames.
 
-### Client → Server Messages
+### Client → Server Messages (4 types)
 
-| Type               | Payload                          | Description                          |
-|--------------------|----------------------------------|--------------------------------------|
-| `session.start`    | `{ config }`                     | Initialize session, set preferences  |
-| `audio.chunk`      | _(binary frame)_                 | Raw PCM audio from mic               |
-| `audio.stop`       | `{}`                             | User stopped speaking (VAD signal)   |
-| `barge_in`         | `{}`                             | User interrupted — cancel response   |
-| `session.end`      | `{}`                             | Graceful disconnect                  |
+| Type            | Payload          | Description                          |
+|-----------------|------------------|--------------------------------------|
+| `session.start` | `{ config }`     | Initialize session, set preferences  |
+| `audio.chunk`   | _(binary frame)_ | Raw PCM audio from mic               |
+| `audio.stop`    | `{}`             | VAD detected end of speech           |
+| `session.end`   | `{}`             | Graceful disconnect                  |
 
-### Server → Client Messages
+### Server → Client Messages (5 types)
 
-| Type                  | Payload                                  | Description                              |
-|-----------------------|------------------------------------------|------------------------------------------|
-| `session.ready`       | `{ session_id }`                         | Session created, ready for audio         |
-| `transcript.partial`  | `{ text, is_final: false }`              | Interim STT result                       |
-| `transcript.final`    | `{ text, is_final: true }`               | Final STT result                         |
-| `response.audio`      | _(binary frame)_                         | TTS audio chunk for playback             |
-| `response.text`       | `{ text, is_final: bool }`               | Assistant text (for display)             |
-| `response.end`        | `{}`                                     | Full response delivered                  |
-| `error`               | `{ code, message }`                      | Error with machine-readable code         |
+| Type                 | Payload                     | Description                      |
+|----------------------|-----------------------------|----------------------------------|
+| `session.ready`      | `{ session_id }`            | Session created, ready for audio |
+| `transcript.partial` | `{ text, is_final: false }` | Interim STT result               |
+| `transcript.final`   | `{ text, is_final: true }`  | Final STT result                 |
+| `response.audio`     | _(binary frame)_            | TTS audio chunk for playback     |
+| `response.end`       | `{}`                        | Full response delivered          |
+| `error`              | `{ code, message }`         | Error with machine-readable code |
 
-### Barge-in Flow
-
-```
-Client                          Server
-  │                               │
-  │──── audio.chunk ─────────────▶│  (user speaking over assistant)
-  │                               │
-  │──── barge_in ────────────────▶│  (client detects overlap)
-  │                               │
-  │                               │── cancel TTS task
-  │                               │── cancel LLM task
-  │                               │── flush audio queue
-  │                               │
-  │◀─── response.end ────────────│  (signals cancellation complete)
-  │                               │
-  │──── audio.chunk ─────────────▶│  (new user utterance proceeds)
-```
-
-On barge-in:
-1. Client sends `barge_in` message and stops audio playback.
-2. Server cancels in-flight TTS + LLM tasks via shared `asyncio.Event`.
-3. Server sends `response.end` to confirm cancellation.
-4. Pipeline resets — ready for next utterance.
+> **Barge-in** (user interrupting mid-response) is deferred to Phase 2.
 
 ---
 
@@ -243,49 +226,56 @@ On barge-in:
 
 ```
 frontend/
-├── app/
-│   ├── layout.tsx
-│   └── page.tsx                  # Main voice assistant page
-├── components/
-│   ├── voice-controls.tsx        # Mic toggle, status indicators
-│   ├── transcript-panel.tsx      # Live transcription display
-│   └── audio-visualizer.tsx      # Waveform / volume meter
-├── lib/
-│   ├── ws-client.ts              # WebSocket connection manager
-│   ├── audio-capture.ts          # AudioWorklet mic capture
-│   ├── audio-playback.ts         # AudioWorklet playback queue
-│   └── barge-in-detector.ts      # Client-side barge-in logic
-├── stores/
-│   └── session-store.ts          # Zustand store
-├── workers/
-│   ├── capture-processor.js      # AudioWorklet processor (capture)
-│   └── playback-processor.js     # AudioWorklet processor (playback)
-└── tests/
-    ├── ws-client.test.ts
-    └── session-store.test.ts
+├── index.html                    # Vite entry point
+├── vite.config.ts
+├── src/
+│   ├── main.tsx                  # React root mount
+│   ├── App.tsx                   # Top-level component + routing
+│   ├── components/
+│   │   ├── voice-controls.tsx    # Mic toggle, status indicators
+│   │   ├── transcript-panel.tsx  # Live transcription display
+│   │   └── audio-visualizer.tsx  # Waveform / volume meter
+│   ├── lib/
+│   │   ├── ws-client.ts          # WebSocket connection manager
+│   │   ├── audio-capture.ts      # AudioWorklet mic capture
+│   │   ├── audio-playback.ts     # AudioWorklet playback queue
+│   │   └── vad.ts                # VAD wrapper (@ricky0123/vad-web)
+│   ├── stores/
+│   │   └── session-store.ts      # Zustand store
+│   └── tests/
+│       ├── ws-client.test.ts
+│       └── session-store.test.ts
 ```
 
 ### AudioWorklet Capture / Playback
 
 **Capture pipeline:**
-1. `getUserMedia()` → `AudioContext` → `AudioWorkletNode` (capture-processor).
+1. `getUserMedia()` → `AudioContext` → `AudioWorkletNode`.
 2. Processor emits PCM Float32 chunks via `port.postMessage`.
-3. `audio-capture.ts` receives chunks, converts to required format, sends over WS.
+3. `audio-capture.ts` receives chunks, sends over WS as binary frames.
 
 **Playback pipeline:**
 1. Server audio chunks arrive via WS as binary frames.
 2. `audio-playback.ts` decodes and queues chunks in a ring buffer.
-3. `AudioWorkletNode` (playback-processor) pulls from buffer for gapless playback.
-4. On barge-in: buffer is flushed, playback stops immediately.
+3. `AudioWorkletNode` pulls from buffer for gapless playback.
+
+### VAD (Voice Activity Detection)
+
+Client-side VAD via `@ricky0123/vad-web`. Runs in-browser, no server round-trip.
+
+- On **speech start** — begin sending `audio.chunk` frames.
+- On **speech end** (silence detected) — send `audio.stop`, stop sending audio.
+
+Eliminates need for server-side VAD logic. Reduces bandwidth (no audio sent during silence).
 
 ### UI State Machine
 
 ```
-  ┌──────────┐   session.start   ┌────────────┐   audio.chunk    ┌───────────┐
+  ┌──────────┐   session.start   ┌────────────┐  speech start   ┌───────────┐
   │          │──────────────────▶│            │────────────────▶│           │
   │   IDLE   │                   │ CONNECTED  │                  │ LISTENING │
   │          │◀──────────────────│            │◀────────────────│           │
-  └──────────┘   session.end     └────────────┘   audio.stop     └─────┬─────┘
+  └──────────┘   session.end     └────────────┘   audio.stop    └─────┬─────┘
                                        │                               │
                                        │                      transcript.final
                                        │                               │
@@ -319,7 +309,7 @@ SessionStore {
   // Actions
   connect():    void
   disconnect(): void
-  addMessage():  void
+  addMessage(): void
   setState():   void
   setError():   void
 }
@@ -327,120 +317,107 @@ SessionStore {
 
 ---
 
-## 6. Session & State (Redis)
+## 6. Session & State (In-Memory)
 
-### Key Schema
+### Data Structure
 
-| Key Pattern                         | Type   | TTL     | Description                    |
-|-------------------------------------|--------|---------|--------------------------------|
-| `session:{session_id}`              | Hash   | 30 min  | Session metadata + config      |
-| `session:{session_id}:history`      | List   | 30 min  | Conversation turns (JSON)      |
-| `session:{session_id}:state`        | String | 30 min  | Current pipeline state         |
+Sessions stored in a module-level Python dict in `session/store.py`:
+
+```python
+sessions: dict[str, SessionData]
+
+SessionData {
+  session_id:   str
+  history:      list[dict]   # conversation turns
+  created_at:   float        # unix timestamp
+  last_active:  float        # updated on each interaction
+}
+```
+
+No external database. Single-process — all sessions share the same dict.
 
 ### Session Lifecycle
 
 ```
-  CREATE              ACTIVE              IDLE                EXPIRE
-    │                   │                   │                    │
-    ▼                   ▼                   ▼                    ▼
-┌────────┐  audio   ┌────────┐  no audio  ┌────────┐  TTL hit  ┌─────────┐
-│  New   │─────────▶│ Active │──────────▶│  Idle  │─────────▶│ Expired │
-│session │          │        │  (>5 min)  │        │  (30min) │         │
-└────────┘          └────────┘           └────────┘          └─────────┘
-                         ▲                   │
-                         │    audio resumes  │
-                         └───────────────────┘
+  CREATE              ACTIVE              EXPIRE
+    │                   │                    │
+    ▼                   ▼                    ▼
+┌────────┐  audio   ┌────────┐  TTL hit  ┌─────────┐
+│  New   │─────────▶│ Active │──────────▶│ Deleted │
+│session │          │        │  (30 min) │ from    │
+└────────┘          └────────┘  asyncio  │ dict    │
+                         ▲      cleanup  └─────────┘
+                         │
+                    last_active
+                    updated on
+                    each turn
 ```
 
-- **Create** — On `session.start`, generate UUID, store config in Redis hash.
-- **Active** — While audio flows, TTL resets on each interaction.
-- **Idle** — No activity for 5 min. Session persists but resources freed.
-- **Expire** — Redis TTL (30 min) expires. Session data deleted.
+- **Create** — On `session.start`, generate UUID, add to dict.
+- **Active** — `last_active` updated on each interaction.
+- **Expire** — Background asyncio task scans dict every 60s, deletes sessions idle > 30 min.
 
-### Conversation Memory
+### Conversation History
 
-Each turn stored in `session:{id}:history` as JSON:
+Each turn stored in `SessionData.history` as a dict:
 
 ```json
 {
   "role": "user | assistant",
   "content": "text content",
-  "timestamp": "ISO-8601",
-  "metadata": { "duration_ms": 1200, "tool_calls": [] }
+  "timestamp": "ISO-8601"
 }
 ```
 
-LangGraph agent receives last N turns as context window (configurable, default: 20 turns).
+Sent to OpenAI Realtime API session on connect. Last 20 turns used as context (configurable).
 
 ---
 
-## 7. AI Orchestration (LangGraph)
+## 7. AI Orchestration (OpenAI Realtime API)
 
-### Agent Graph
+### Overview
+
+The OpenAI Realtime API manages the full STT → LLM → TTS loop within a single persistent WebSocket session. No separate orchestration framework needed.
 
 ```
-                    ┌──────────────┐
-                    │   START      │
-                    │  (transcript)│
-                    └──────┬───────┘
-                           │
-                           ▼
-                    ┌──────────────┐
-              ┌────▶│   ROUTER     │◀───────────────┐
-              │     │  (classify)  │                │
-              │     └──────┬───────┘                │
-              │            │                        │
-              │     ┌──────┼──────┐                 │
-              │     ▼      ▼      ▼                 │
-              │  ┌─────┐┌─────┐┌──────┐             │
-              │  │CHAT ││TOOL ││GUARD │             │
-              │  │     ││CALL ││(safe?)│             │
-              │  └──┬──┘└──┬──┘└──┬───┘             │
-              │     │      │      │                 │
-              │     │      ▼      │                 │
-              │     │  ┌──────┐   │                 │
-              │     │  │EXEC  │   │                 │
-              │     │  │TOOL  │───┘                 │
-              │     │  └──┬───┘                     │
-              │     │     │ (tool result)           │
-              │     │     └─────────────────────────┘
-              │     ▼
-              │  ┌──────────────┐
-              │  │   STREAM     │
-              │  │  (response)  │
-              │  └──────┬───────┘
-              │         │
-              │         ▼
-              │  ┌──────────────┐
-              └──│     END      │
-                 └──────────────┘
+  backend/pipeline/realtime-client.py
+  │
+  ├── open WebSocket → wss://api.openai.com/v1/realtime
+  │
+  ├── send session.update (model, voice, tools config)
+  │
+  ├── pipe audio in:  input_audio_buffer.append  ──▶ OpenAI
+  │
+  ├── receive events:
+  │   ├── response.audio.delta            ──▶ forward binary to client WS
+  │   ├── response.audio_transcript.delta ──▶ send transcript.partial to client
+  │   ├── response.done                   ──▶ send response.end to client
+  │   └── response.function_call          ──▶ execute tool, send result back
+  │
+  └── pipe audio out: response.audio.delta ──▶ client binary frames
 ```
-
-**Nodes:**
-- **Router** — Classifies intent: direct chat, tool-needed, or safety-guard.
-- **Chat** — Direct conversational response, no tools needed.
-- **Tool Call** — LLM decides which tool(s) to invoke.
-- **Exec Tool** — Executes tool, returns result to Router for follow-up.
-- **Guard** — Safety check — rejects out-of-scope or harmful requests.
-- **Stream** — Streams final response tokens to TTS stage.
 
 ### Tool-Calling Pattern
 
+Tools registered via `session.update` at session start:
+
 ```python
-# Tools registered with LangGraph agent
 tools = [
-    lookup_order_status,    # Query order by ID
-    check_availability,     # Product/schedule lookup
-    transfer_to_human,      # Escalation
-    # ... domain-specific tools
+    { "type": "function", "name": "lookup_order_status", ... },
+    { "type": "function", "name": "check_availability",  ... },
+    { "type": "function", "name": "transfer_to_human",   ... },
 ]
 ```
 
-Tool execution is async. Results feed back into the Router node for potential multi-step reasoning (e.g., lookup → follow-up question → action).
+On tool call:
+1. OpenAI emits `response.function_call` event with args.
+2. `realtime-client.py` executes the corresponding async Python function.
+3. Result sent back via `conversation.item.create` (type: `function_call_output`).
+4. OpenAI continues generating the response with tool result in context.
 
-### Streaming Integration
+### Streaming
 
-LangGraph agent uses `astream_events()` to yield tokens as they're generated. The LLM stage forwards these tokens to the TTS buffer queue, enabling optimistic execution.
+Audio streams back incrementally via `response.audio.delta` events — no custom buffering required. Backend forwards each delta directly to the client WebSocket as a binary frame.
 
 ---
 
@@ -449,64 +426,62 @@ LangGraph agent uses `astream_events()` to yield tokens as they're generated. Th
 ### Docker Compose (Development)
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                   docker-compose.yml                    │
-│                                                        │
-│  ┌──────────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │   backend    │  │  redis   │  │    frontend       │ │
-│  │  Python 3.11 │  │  7.x     │  │   Next.js 14+    │ │
-│  │  Port: 8000  │  │  Port:   │  │   Port: 3000     │ │
-│  │              │──▶│  6379    │  │                  │ │
-│  │  FastAPI +   │  │          │  │   Dev server     │ │
-│  │  Uvicorn     │  │          │  │                  │ │
-│  └──────────────┘  └──────────┘  └──────────────────┘ │
-│                                                        │
-│  Network: velovoice-net (bridge)                       │
-└────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│               docker-compose.yml               │
+│                                                │
+│  ┌──────────────┐       ┌──────────────────┐   │
+│  │   backend    │       │    frontend      │   │
+│  │  Python 3.11 │       │  Vite + React    │   │
+│  │  Port: 8000  │       │   Port: 3000     │   │
+│  │              │       │                  │   │
+│  │  FastAPI +   │       │   Dev server     │   │
+│  │  Uvicorn     │       │                  │   │
+│  └──────────────┘       └──────────────────┘   │
+│                                                │
+│  Network: velovoice-net (bridge)               │
+└────────────────────────────────────────────────┘
 ```
 
 **Services:**
 
-| Service    | Image / Base      | Ports          | Depends On |
-|------------|-------------------|----------------|------------|
-| `backend`  | Python 3.11-slim  | 8000:8000      | redis      |
-| `redis`    | redis:7-alpine    | 6379 (internal)| —          |
-| `frontend` | node:20-alpine    | 3000:3000      | backend    |
+| Service    | Image / Base     | Ports     | Depends On |
+|------------|------------------|-----------|------------|
+| `backend`  | Python 3.11-slim | 8000:8000 | —          |
+| `frontend` | node:20-alpine   | 3000:3000 | backend    |
 
 ### Production Notes
 
-- **Backend scaling** — Uvicorn workers behind reverse proxy (nginx/Caddy). Each worker handles many WS connections via asyncio.
-- **Redis** — Consider Redis Sentinel or managed Redis for HA.
-- **TLS** — Terminate at reverse proxy. WSS required in production.
-- **Secrets** — Env vars via `.env` file (dev) or secret manager (prod). Never committed.
+- **Backend scaling** — Uvicorn workers behind reverse proxy (nginx/Caddy).
+- **TLS** — WSS required in production; terminate at reverse proxy. AudioWorklet requires HTTPS (`localhost` exempt for dev).
+- **Secrets** — `OPENAI_API_KEY` via `.env` (dev) or secret manager (prod). Never committed.
 - **Health checks** — Docker health check hits `/health` endpoint.
 
 ---
 
 ## 9. Design Decisions
 
-| Decision                            | Choice                         | Rationale                                                        | Tradeoff                                            |
-|-------------------------------------|--------------------------------|------------------------------------------------------------------|-----------------------------------------------------|
-| Backend framework                   | FastAPI + asyncio              | Native async, WebSocket support, high concurrency                | Smaller ecosystem than Django                       |
-| Real-time protocol                  | WebSockets                    | Full-duplex, low overhead for streaming audio                    | No built-in reconnection (must implement)           |
-| Voice pipeline                      | OpenAI Realtime API (primary) | Single API for STT+LLM+TTS, lowest latency                      | Vendor lock-in, cost                                |
-| Voice pipeline (fallback)           | Deepgram STT + ElevenLabs TTS | Best-in-class individual providers                               | Higher integration complexity, slightly more latency|
-| Optimistic execution                | Buffer + stream TTS early     | ~300ms latency saved vs wait-for-complete                        | Potential for mid-sentence TTS if LLM changes course|
-| State management                    | Redis                         | Fast, TTL support, pub/sub for future scaling                    | Extra infra component                               |
-| AI orchestration                    | LangGraph                     | Stateful agent graphs, tool-calling, streaming                   | Learning curve, abstraction overhead                |
-| Frontend framework                  | Next.js                       | React ecosystem, SSR for initial load, API routes                | Heavier than plain React for SPA                    |
-| Audio handling                      | AudioWorklet API              | Low-latency, off-main-thread processing                          | Limited browser support (no Safari < 14.5)          |
-| Client state                        | Zustand                       | Minimal boilerplate, good for real-time state                    | Less structure than Redux                           |
+| Decision               | Choice                             | Rationale                                               | Tradeoff                                          |
+|------------------------|------------------------------------|---------------------------------------------------------|---------------------------------------------------|
+| Backend framework      | FastAPI + asyncio                  | Native async, WebSocket support, high concurrency       | Smaller ecosystem than Django                     |
+| Real-time protocol     | WebSockets                         | Full-duplex, low overhead for streaming audio           | No built-in reconnection (must implement)         |
+| Voice pipeline         | OpenAI Realtime API                | One API for STT+LLM+TTS; lowest latency; no stitching  | Vendor lock-in; ~$0.06/min cost                   |
+| AI orchestration       | OpenAI Realtime API (native)       | Tool calling built-in; no separate framework needed     | Less flexibility than LangGraph for complex flows |
+| Session state          | In-memory Python dict              | Zero dependencies; sufficient for single-process dev   | Lost on restart; no multi-process sharing         |
+| VAD                    | Client-side (`@ricky0123/vad-web`) | No server code; reduces bandwidth; good accuracy        | No server-side fallback                           |
+| Frontend framework     | Vite + React + Tailwind CSS        | SPA-first, fast HMR, no SSR overhead for voice UI       | No SSR (not needed for a voice assistant SPA)     |
+| Audio handling         | AudioWorklet API                   | Low-latency, off-main-thread processing                 | Requires HTTPS in prod; no Safari < 14.5          |
+| Client state           | Zustand                            | Minimal boilerplate, good for real-time state           | Less structure than Redux                         |
 
 ### Why OpenAI Realtime API?
 
-The Realtime API provides a unified WebSocket interface for speech-to-speech, eliminating the need to chain separate STT → LLM → TTS services. Benefits:
+The Realtime API provides a unified WebSocket interface for speech-to-speech, eliminating the need to chain separate STT → LLM → TTS services and a separate orchestration framework. Benefits:
 
-- **Latency** — Single round-trip vs. three sequential API calls.
-- **Context** — Audio and text context maintained in one session.
-- **Simplicity** — One integration point instead of three.
+- **Latency** — Single persistent session; no chained API round-trips.
+- **Simplicity** — One integration point instead of three providers + LangGraph.
+- **Optimistic audio** — Handled server-side; no custom buffer logic.
+- **Tool calling** — Built-in via `session.update` tools config.
 
-The modular pipeline design allows swapping to Deepgram + ElevenLabs without architectural changes.
+If provider flexibility is needed later, the modular pipeline design allows swapping `realtime-client.py` for separate STT/LLM/TTS clients without changing the WS handler or frontend.
 
 ---
 
@@ -520,32 +495,34 @@ All logs emitted as JSON with consistent fields:
 {
   "timestamp": "ISO-8601",
   "level": "info",
-  "action": "stt_transcript_received",
+  "action": "session_created",
   "session_id": "uuid",
-  "duration_ms": 210,
+  "duration_ms": 12,
   "metadata": {}
 }
 ```
 
 **Log levels:**
-- `debug` — Development tracing (audio chunk sizes, buffer state).
+- `debug` — Dev tracing (audio chunk sizes, API event names).
 - `info` — Operational events (session created, transcript received, response sent).
-- `warn` — Recoverable issues (STT timeout, retry triggered).
-- `error` — Failures (provider API error, WS disconnect, unhandled exception).
+- `warn` — Recoverable issues (API timeout, retry triggered).
+- `error` — Failures (API error, WS disconnect, unhandled exception).
 
-### Key Metrics
+**Key actions to log:**
 
-| Metric                         | Type      | Description                              |
-|--------------------------------|-----------|------------------------------------------|
-| `stt_latency_ms`              | Histogram | Time from audio received to transcript   |
-| `llm_ttft_ms`                 | Histogram | LLM time-to-first-token                  |
-| `tts_latency_ms`              | Histogram | Time from text to first audio chunk      |
-| `e2e_latency_ms`              | Histogram | End-to-end: user speech → assistant audio|
-| `active_sessions`             | Gauge     | Current WebSocket connections             |
-| `barge_in_count`              | Counter   | Barge-in events                          |
-| `pipeline_errors`             | Counter   | Pipeline stage failures (by stage)       |
+| Action                    | Level | Notes                          |
+|---------------------------|-------|--------------------------------|
+| `session_created`         | info  | Include session_id             |
+| `audio_received`          | debug | Include chunk size bytes       |
+| `realtime_session_opened` | info  | OpenAI WS connected            |
+| `transcript_final`        | info  | Include text, duration_ms      |
+| `response_started`        | info  |                                |
+| `response_ended`          | info  | Include total duration_ms      |
+| `tool_call_executed`      | info  | Include tool name, duration_ms |
+| `session_expired`         | info  | TTL cleanup                    |
+| `pipeline_error`          | error | Include error message + stage  |
 
-### Health Checks
+### Health Check
 
 **Endpoint:** `GET /health`
 
@@ -553,45 +530,35 @@ All logs emitted as JSON with consistent fields:
 {
   "status": "healthy",
   "checks": {
-    "redis": "connected",
-    "stt_provider": "reachable",
-    "llm_provider": "reachable",
-    "tts_provider": "reachable"
+    "openai_realtime": "reachable"
   },
+  "active_sessions": 2,
   "uptime_seconds": 3600
 }
 ```
 
-Returns `200` if all checks pass, `503` if any critical check fails. Used by Docker health checks and load balancers.
+Returns `200` if all checks pass, `503` if critical check fails. Used by Docker health checks.
 
 ---
 
 ## 11. Test Strategy
 
-| Layer              | Scope                                    | Tools                    | Coverage Target |
-|--------------------|------------------------------------------|--------------------------|-----------------|
-| **Unit**           | Individual functions, buffer logic, store | pytest / vitest          | ≥ 80%          |
-| **Integration**    | Pipeline stages, Redis session ops, WS   | pytest + httpx/websockets| ≥ 70%          |
-| **E2E**            | Full voice flow (recorded audio in/out)  | Playwright + custom      | Critical paths  |
-| **Contract**       | WS message schema validation             | pydantic / zod           | 100% of types  |
-| **Load**           | Concurrent WS connections, latency P99   | Locust / k6              | Benchmarks      |
+| Layer           | Scope                                   | Tools                     | Target         |
+|-----------------|-----------------------------------------|---------------------------|----------------|
+| **Unit**        | Session store, message types, VAD logic | pytest / vitest           | ≥ 70%          |
+| **Integration** | WS handler, realtime client proxy       | pytest + httpx/websockets | Critical paths |
 
 **Principles:**
-- Tests written *before* implementation (TDD — Red → Green → Refactor).
-- No mocks for core pipeline logic — use real providers in integration tests (with recorded fixtures for CI).
-- Contract tests ensure client/server message compatibility.
-- Load tests validate latency budget under concurrent sessions.
+- Tests written before implementation (TDD — Red → Green → Refactor).
+- Unit tests mock OpenAI Realtime API responses (valid to mock external provider).
+- Integration tests verify the full WS handshake and message flow end-to-end.
 
 ---
 
 ## 12. Unresolved Questions
 
-| #  | Question                                                                 | Impact     | Notes                                                        |
-|----|--------------------------------------------------------------------------|------------|--------------------------------------------------------------|
-| 1  | OpenAI Realtime API vs. Deepgram+ElevenLabs as default provider?         | High       | Affects latency, cost, and pipeline complexity               |
-| 2  | VAD (Voice Activity Detection) — server-side or client-side?             | Medium     | Client-side saves bandwidth; server-side more accurate       |
-| 3  | Audio format — PCM 16-bit vs. Opus codec for WS transport?              | Medium     | Opus reduces bandwidth ~10x but adds encode/decode latency   |
-| 4  | Max concurrent sessions per backend instance?                            | High       | Determines scaling strategy and resource allocation          |
-| 5  | Conversation history — full context vs. sliding window vs. summary?      | Medium     | Affects LLM cost and response quality for long conversations |
-| 6  | Authentication — JWT tokens or session cookies for WS upgrade?           | Medium     | Security model not yet defined                               |
-| 7  | Multi-language support — required for V1 or deferred?                    | Low        | Affects STT/TTS provider selection and prompt design         |
+| # | Question                                                              | Notes                                              |
+|---|-----------------------------------------------------------------------|----------------------------------------------------|
+| 1 | OpenAI Realtime API pricing — acceptable for sustained learning use?  | ~$0.06/min audio in + $0.12/min audio out          |
+| 2 | HTTPS required for AudioWorklet in production?                        | Yes. `localhost` is exempt for local development.  |
+| 3 | VAD library — `@ricky0123/vad-web` vs manual energy threshold?        | Library recommended; handles edge cases well.      |
