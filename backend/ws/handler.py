@@ -4,11 +4,11 @@ Connection lifecycle
 --------------------
   connect
   └─ recv loop:
-       ├─ binary frame  → buffer audio (Phase 3 wires to RealtimeClient)
+       ├─ binary frame  → realtime_client.send_audio(bytes)
        └─ text frame    → parse ClientMessage
-            ├─ session.start  → session_store.create(), [Phase 3: open realtime client], send session.ready
-            ├─ audio.stop     → [Phase 3: signal realtime client to flush]
-            └─ session.end    → [Phase 3: close realtime client], session_store.delete(), close WS 1000
+            ├─ session.start  → session_store.create(), RealtimeClient.connect(), send session.ready
+            ├─ audio.stop     → realtime_client.flush()
+            └─ session.end    → realtime_client.close(), session_store.delete(), close WS 1000
 
 Error codes (non-fatal unless noted)
 -------------------------------------
@@ -22,9 +22,10 @@ import json
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from observability.logger import get_logger
+from pipeline.realtime_client import RealtimeClient, RealtimeClientError
 from session.store import session_store
 from ws.message_types import (
     AudioStopMessage,
@@ -38,10 +39,23 @@ from ws.message_types import (
 log = get_logger(__name__)
 router = APIRouter()
 
+_client_message_adapter = TypeAdapter(ClientMessage)
+
 
 async def _send_json(ws: WebSocket, payload: dict) -> None:
     """Serialise and send a JSON text frame."""
     await ws.send_text(json.dumps(payload))
+
+
+def _make_send_callback(ws: WebSocket):
+    """Return an async callback that forwards events from RealtimeClient to the browser WS."""
+    async def _send(payload: dict) -> None:
+        # Special internal type for raw audio bytes — send as binary frame
+        if payload.get("type") == "__audio_bytes__":
+            await ws.send_bytes(payload["bytes"])
+        else:
+            await _send_json(ws, payload)
+    return _send
 
 
 @router.websocket("/ws")
@@ -50,17 +64,17 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     log.info("ws_connected", extra={"action": "ws_connected"})
 
     session_id: str | None = None
+    realtime_client: RealtimeClient | None = None
 
     try:
         while True:
-            # Receive next frame — binary or text
             message = await ws.receive()
 
             # ----------------------------------------------------------------
             # Binary frame — audio chunk
             # ----------------------------------------------------------------
             if "bytes" in message and message["bytes"] is not None:
-                if session_id is None:
+                if session_id is None or realtime_client is None:
                     await _send_json(
                         ws,
                         error_msg(
@@ -70,9 +84,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         ),
                     )
                     continue
-
-                # Phase 3: forward to realtime client
-                # await realtime_client.send_audio(message["bytes"])
+                await realtime_client.send_audio(message["bytes"])
                 continue
 
             # ----------------------------------------------------------------
@@ -87,44 +99,24 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             except json.JSONDecodeError:
                 await _send_json(
                     ws,
-                    error_msg(
-                        "INVALID_MESSAGE_TYPE",
-                        "Message must be valid JSON.",
-                        fatal=False,
-                    ),
+                    error_msg("INVALID_MESSAGE_TYPE", "Message must be valid JSON.", fatal=False),
                 )
-                log.warning(
-                    "ws_message_invalid",
-                    extra={"action": "ws_message_invalid", "session_id": session_id},
-                )
+                log.warning("ws_message_invalid", extra={"action": "ws_message_invalid", "session_id": session_id})
                 continue
 
-            # Validate with discriminated union
             try:
-                from pydantic import TypeAdapter
-
-                adapter = TypeAdapter(ClientMessage)
-                msg = adapter.validate_python(data)
+                msg = _client_message_adapter.validate_python(data)
             except ValidationError as exc:
-                # Check if it's a missing/bad discriminator vs. schema error
                 errors = exc.errors()
                 is_unknown_type = any(
-                    e.get("type") == "union_tag_invalid" or
-                    e.get("loc") == ("type",)
+                    e.get("type") == "union_tag_invalid" or e.get("loc") == ("type",)
                     for e in errors
                 )
                 code = "INVALID_MESSAGE_TYPE" if is_unknown_type else "INVALID_MESSAGE_SCHEMA"
-                await _send_json(
-                    ws,
-                    error_msg(code, str(exc), fatal=False),
-                )
+                await _send_json(ws, error_msg(code, str(exc), fatal=False))
                 log.warning(
                     "ws_message_invalid",
-                    extra={
-                        "action": "ws_message_invalid",
-                        "session_id": session_id,
-                        "metadata": {"code": code},
-                    },
+                    extra={"action": "ws_message_invalid", "session_id": session_id, "metadata": {"code": code}},
                 )
                 continue
 
@@ -133,49 +125,58 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             # ----------------------------------------------------------------
             if isinstance(msg, SessionStartMessage):
                 session_id = str(uuid.uuid4())
-                session_store.create(session_id)
-                # Phase 3: open realtime client here
+                session = session_store.create(session_id)
+
+                realtime_client = RealtimeClient(
+                    session_id=session_id,
+                    send_to_client=_make_send_callback(ws),
+                )
+
+                try:
+                    await realtime_client.connect(
+                        voice=msg.config.voice,
+                        history=session.history,
+                    )
+                except RealtimeClientError as exc:
+                    session_store.delete(session_id)
+                    await _send_json(
+                        ws,
+                        error_msg("OPENAI_CONNECTION_FAILED", str(exc), fatal=True),
+                    )
+                    await ws.close(code=1011)
+                    return
+
+                session.realtime_client = realtime_client
                 await _send_json(ws, session_ready(session_id))
 
             elif isinstance(msg, AudioStopMessage):
-                if session_id is None:
+                if session_id is None or realtime_client is None:
                     await _send_json(
                         ws,
-                        error_msg(
-                            "SESSION_NOT_FOUND",
-                            "No active session. Send session.start first.",
-                            fatal=False,
-                        ),
+                        error_msg("SESSION_NOT_FOUND", "No active session. Send session.start first.", fatal=False),
                     )
                     continue
-                # Phase 3: await realtime_client.flush()
+                await realtime_client.flush()
 
             elif isinstance(msg, SessionEndMessage):
+                if realtime_client is not None:
+                    await realtime_client.close()
                 if session_id is not None:
-                    # Phase 3: await realtime_client.close()
                     session_store.delete(session_id)
                 await ws.close(code=1000)
                 return
 
     except WebSocketDisconnect:
-        log.info(
-            "ws_disconnected",
-            extra={"action": "ws_disconnected", "session_id": session_id},
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.exception(
-            "ws_internal_error",
-            extra={"action": "pipeline_error", "session_id": session_id},
-        )
+        log.info("ws_disconnected", extra={"action": "ws_disconnected", "session_id": session_id})
+    except Exception:  # noqa: BLE001
+        log.exception("ws_internal_error", extra={"action": "pipeline_error", "session_id": session_id})
         try:
-            await _send_json(
-                ws,
-                error_msg("INTERNAL_ERROR", "An unexpected error occurred.", fatal=True),
-            )
+            await _send_json(ws, error_msg("INTERNAL_ERROR", "An unexpected error occurred.", fatal=True))
             await ws.close(code=1011)
         except Exception:
             pass
     finally:
-        # Cleanup: if session still active (e.g. client disconnected mid-session)
+        if realtime_client is not None:
+            await realtime_client.close()
         if session_id and session_store.get(session_id):
             session_store.delete(session_id)

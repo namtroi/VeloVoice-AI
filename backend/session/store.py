@@ -3,7 +3,7 @@
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
 from observability.logger import get_logger
@@ -17,6 +17,7 @@ class SessionData:
     history: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
+    realtime_client: Any = field(default=None, repr=False)  # RealtimeClient | None
 
 
 class SessionStore:

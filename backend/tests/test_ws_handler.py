@@ -1,6 +1,7 @@
 """Tests for WebSocket handler — connection lifecycle, message routing, error paths."""
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,17 @@ from session.store import session_store
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def mock_realtime():
+    """Patch RealtimeClient so tests never hit OpenAI."""
+    mock = MagicMock()
+    mock.connect = AsyncMock()
+    mock.send_audio = AsyncMock()
+    mock.flush = AsyncMock()
+    mock.close = AsyncMock()
+    with patch("ws.handler.RealtimeClient", return_value=mock):
+        yield mock
 
 @pytest.fixture(autouse=True)
 def clear_store():
