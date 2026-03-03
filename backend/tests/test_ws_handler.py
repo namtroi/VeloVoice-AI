@@ -197,3 +197,25 @@ class TestErrorPaths:
                 sid2 = recv_json(ws2)["session_id"]
                 assert sid1 != sid2
                 assert session_store.active_count == 2
+
+    def test_ws_close_after_error_failed_is_logged(self, client, caplog):
+        """When WS close inside the fatal-error handler also raises, a debug log must appear."""
+        import logging
+
+        # Force the handler into the outer except branch by making connect() raise a
+        # non-RealtimeClientError (unhandled) so the `except Exception` block fires.
+        with patch("ws.handler.RealtimeClient") as mock_cls:
+            instance = MagicMock()
+            instance.connect = AsyncMock(side_effect=RuntimeError("boom"))
+            instance.close = AsyncMock()
+            mock_cls.return_value = instance
+
+            with caplog.at_level(logging.DEBUG):
+                with client.websocket_connect("/ws") as ws:
+                    send_json(ws, {"type": "session.start"})
+                    try:
+                        ws.receive_text()
+                    except Exception:
+                        pass
+
+        assert "ws_internal_error" in caplog.text

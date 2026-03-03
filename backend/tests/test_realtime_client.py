@@ -118,6 +118,48 @@ class TestConnect:
                 with pytest.raises(RealtimeClientError):
                     await client.connect()
 
+    @pytest.mark.asyncio
+    async def test_connect_truncates_history_to_max_turns(self):
+        """History longer than history_max_turns must be sliced to max_turns items."""
+        long_history = [{"role": "user", "content": f"msg {i}"} for i in range(30)]
+        client = RealtimeClient("sid", AsyncMock())
+        ws_mock = make_ws_mock([])
+        with patch(
+            "pipeline.realtime_client.settings",
+            openai_api_key="k",
+            openai_model="m",
+            history_max_turns=20,
+        ):
+            with patch("pipeline.realtime_client.websockets.connect", new=AsyncMock(return_value=ws_mock)):
+                await client.connect(voice="alloy", history=long_history)
+                if client._recv_task:
+                    client._recv_task.cancel()
+        sent = [json.loads(c.args[0]) for c in ws_mock.send.call_args_list]
+        item_creates = [s for s in sent if s.get("type") == "conversation.item.create"]
+        assert len(item_creates) == 20
+
+    @pytest.mark.asyncio
+    async def test_connect_keeps_most_recent_turns_when_truncating(self):
+        """When truncating, the most recent N turns must be kept."""
+        history = [{"role": "user", "content": f"msg {i}"} for i in range(25)]
+        client = RealtimeClient("sid", AsyncMock())
+        ws_mock = make_ws_mock([])
+        with patch(
+            "pipeline.realtime_client.settings",
+            openai_api_key="k",
+            openai_model="m",
+            history_max_turns=5,
+        ):
+            with patch("pipeline.realtime_client.websockets.connect", new=AsyncMock(return_value=ws_mock)):
+                await client.connect(voice="alloy", history=history)
+                if client._recv_task:
+                    client._recv_task.cancel()
+        sent = [json.loads(c.args[0]) for c in ws_mock.send.call_args_list]
+        item_creates = [s for s in sent if s.get("type") == "conversation.item.create"]
+        assert len(item_creates) == 5
+        texts = [i["item"]["content"][0]["text"] for i in item_creates]
+        assert texts == [f"msg {i}" for i in range(20, 25)]
+
 
 # ---------------------------------------------------------------------------
 # send_audio() / flush()
@@ -328,3 +370,16 @@ class TestClose:
             await client.connect()
             await client.close()
             await client.close()  # second close must not raise
+
+    @pytest.mark.asyncio
+    async def test_close_logs_ws_close_error(self, caplog):
+        import logging
+        client = RealtimeClient("sid", AsyncMock())
+        ws_mock = make_ws_mock([])
+        ws_mock.close = AsyncMock(side_effect=OSError("already closed"))
+        p_conn, p_cfg = patch_connect(ws_mock)
+        with p_conn, p_cfg:
+            await client.connect()
+            with caplog.at_level(logging.DEBUG):
+                await client.close()
+        assert "realtime_ws_close_error" in caplog.text

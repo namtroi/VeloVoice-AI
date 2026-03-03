@@ -173,8 +173,15 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         try:
             await _send_json(ws, error_msg("INTERNAL_ERROR", "An unexpected error occurred.", fatal=True))
             await ws.close(code=1011)
-        except Exception:
-            pass
+        except Exception as close_exc:
+            log.debug(
+                "ws_close_after_error_failed",
+                extra={
+                    "action": "ws_close_after_error_failed",
+                    "session_id": session_id,
+                    "metadata": {"error": str(close_exc)},
+                },
+            )
     finally:
         if realtime_client is not None:
             await realtime_client.close()

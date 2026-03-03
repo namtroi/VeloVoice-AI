@@ -40,7 +40,7 @@ None in V1. OpenAI API key is held server-side via `.env`. Clients connect witho
 
 ### Audio Format (Global)
 
-All binary WebSocket frames carry **PCM signed 16-bit little-endian, 16 kHz, mono** audio.
+All binary WebSocket frames carry **PCM signed 16-bit little-endian, 24 kHz, mono** audio.
 See [Section 7](#7-audio-format-reference) for full spec.
 
 ---
@@ -127,7 +127,7 @@ Raw PCM audio from the microphone. **Binary WebSocket frame — no JSON wrapper.
 - Stop sending on VAD silence (send `audio.stop` instead).
 - Recommended chunk size: 4096 samples (~256 ms).
 
-**Format:** PCM signed 16-bit LE, 16 kHz, mono. See [Section 7](#7-audio-format-reference).
+**Format:** PCM signed 16-bit LE, 24 kHz, mono. See [Section 7](#7-audio-format-reference).
 
 ---
 
@@ -230,7 +230,7 @@ Definitive user utterance. Store in conversation history.
 
 A chunk of assistant TTS audio. **Binary WebSocket frame — no JSON wrapper.**
 
-- Same PCM format as input audio: 16-bit LE, 16 kHz, mono.
+- Same PCM format as input audio: 16-bit LE, 24 kHz, mono.
 - Queue chunks in order. Play via AudioWorklet.
 - Do not skip or reorder chunks — gapless playback depends on order.
 
@@ -345,7 +345,7 @@ All binary WebSocket frames (both directions) use the same PCM format.
 | Property      | Value                   | Notes                                               |
 |---------------|-------------------------|-----------------------------------------------------|
 | Encoding      | PCM signed 16-bit LE    | Raw samples, no container or file header            |
-| Sample rate   | 16,000 Hz               | Required by OpenAI Realtime API                     |
+| Sample rate   | 24,000 Hz               | Recommended by OpenAI for gpt-4o-realtime           |
 | Channels      | 1 (mono)                |                                                     |
 | Bit depth     | 16-bit                  | 2 bytes per sample                                  |
 | Byte order    | Little-endian           |                                                     |
@@ -353,7 +353,7 @@ All binary WebSocket frames (both directions) use the same PCM format.
 | WS frame type | Binary                  | No JSON envelope                                    |
 | Direction     | Both                    | Mic capture (client→server) and TTS (server→client) |
 
-**Bytes per second:** 16,000 samples × 2 bytes = **32,000 bytes/s (~31 KB/s)**.
+**Bytes per second:** 24,000 samples × 2 bytes = **48,000 bytes/s (~47 KB/s)**.
 
 ---
 

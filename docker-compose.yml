@@ -24,8 +24,11 @@ services:
       - "3000:3000"
     env_file:
       - .env
+    environment:
+      - VITE_BACKEND_WS_TARGET=ws://backend:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy

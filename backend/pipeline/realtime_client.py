@@ -67,6 +67,18 @@ class RealtimeClient:
     async def connect(self, voice: str = "alloy", history: list[dict] = None) -> None:
         """Open the OpenAI Realtime WebSocket and start the recv loop."""
         history = history or []
+        # Enforce the configured turn limit — keep the most recent N turns
+        max_turns = settings.history_max_turns
+        if len(history) > max_turns:
+            log.debug(
+                "history_truncated",
+                extra={
+                    "action": "history_truncated",
+                    "session_id": self._session_id,
+                    "metadata": {"original": len(history), "max": max_turns},
+                },
+            )
+            history = history[-max_turns:]
         url = f"{OPENAI_WS_URL}?model={settings.openai_model}"
         headers = {
             "Authorization": f"Bearer {settings.openai_api_key}",
@@ -149,8 +161,15 @@ class RealtimeClient:
         if self._ws:
             try:
                 await self._ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug(
+                    "realtime_ws_close_error",
+                    extra={
+                        "action": "realtime_ws_close_error",
+                        "session_id": self._session_id,
+                        "metadata": {"error": str(exc)},
+                    },
+                )
             self._ws = None
 
     # ------------------------------------------------------------------
