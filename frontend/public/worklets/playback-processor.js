@@ -3,6 +3,7 @@
  * 
  * AudioWorkletProcessor that receives float32 audio chunks from the main thread,
  * stores them in an internal ring-buffer, and plays them smoothly to the speakers.
+ * Includes pre-buffering to prevent choppy playback from bursty chunk arrival.
  */
 
 class PlaybackProcessor extends AudioWorkletProcessor {
@@ -72,7 +73,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     const channel = output[0]
     const toRead = channel.length
 
-    // If we have underflow (no data left), fill with zeroes (silence)
+    // If no data left, fill with silence
     if (this.framesAvailable === 0) {
       channel.fill(0)
       return true

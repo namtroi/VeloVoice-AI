@@ -37,6 +37,11 @@ const ResponseEndSchema = z.object({
   type: z.literal('response.end'),
 })
 
+const TranscriptUserSchema = z.object({
+  type: z.literal('transcript.user'),
+  text: z.string(),
+})
+
 const ErrorSchema = z.object({
   type: z.literal('error'),
   code: z.string(),
@@ -48,6 +53,7 @@ const ServerMessageSchema = z.discriminatedUnion('type', [
   SessionReadySchema,
   TranscriptPartialSchema,
   TranscriptFinalSchema,
+  TranscriptUserSchema,
   ResponseEndSchema,
   ErrorSchema,
 ])
@@ -60,6 +66,7 @@ export interface WsHandlers {
   onSessionReady(sessionId: string): void
   onTranscriptPartial(text: string): void
   onTranscriptFinal(text: string): void
+  onTranscriptUser(text: string): void
   onResponseAudio(chunk: ArrayBuffer): void
   onResponseEnd(): void
   onError(code: string, message: string, fatal: boolean): void
@@ -162,6 +169,9 @@ export class WsClient {
           break
         case 'transcript.final':
           this._handlers?.onTranscriptFinal(msg.text)
+          break
+        case 'transcript.user':
+          this._handlers?.onTranscriptUser(msg.text)
           break
         case 'response.end':
           this._handlers?.onResponseEnd()

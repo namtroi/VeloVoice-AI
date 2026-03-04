@@ -49,6 +49,7 @@ export default function App() {
   const captureRef = useRef<AudioCapture | null>(null)
   const playbackRef = useRef<AudioPlayback | null>(null)
   const vadRef = useRef<VadController | null>(null)
+  const speechEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Build WsHandlers wired to the store
   const getHandlers = useCallback(
@@ -63,13 +64,18 @@ export default function App() {
         addMessage('assistant', text)
         setStatus('connected')
       },
+      onTranscriptUser(text: string) {
+        addMessage('user', text)
+      },
       onResponseAudio(chunk: ArrayBuffer) {
         setStatus('speaking')
+        vadRef.current?.pause()
         playbackRef.current?.push(chunk).catch(console.error)
       },
       onResponseEnd() {
         setStatus('connected')
-        playbackRef.current?.drain().catch(console.error)
+        playbackRef.current?.flush().catch(console.error)
+        vadRef.current?.resume()
       },
       onError(code: string, message: string, fatal: boolean) {
         setError(`[${code}] ${message}`)
@@ -101,15 +107,25 @@ export default function App() {
       // 4. Start VAD
       await vadRef.current.start(
         () => {
-          // Speech started
+          // Speech started — cancel any pending speech-end debounce
+          if (speechEndTimerRef.current) {
+            clearTimeout(speechEndTimerRef.current)
+            speechEndTimerRef.current = null
+          }
           captureRef.current?.setVadActive(true)
           setStatus('listening')
         },
         () => {
-          // Speech ended
-          captureRef.current?.setVadActive(false)
-          clientRef.current?.sendAudioStop()
-          setStatus('processing')
+          // Speech ended — debounce to tolerate brief pauses
+          if (speechEndTimerRef.current) {
+            clearTimeout(speechEndTimerRef.current)
+          }
+          speechEndTimerRef.current = setTimeout(() => {
+            speechEndTimerRef.current = null
+            captureRef.current?.setVadActive(false)
+            clientRef.current?.sendAudioStop()
+            setStatus('processing')
+          }, 300)
         }
       )
 

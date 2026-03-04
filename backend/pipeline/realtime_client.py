@@ -38,6 +38,7 @@ from ws.message_types import (
     response_end,
     transcript_final,
     transcript_partial,
+    transcript_user,
 )
 
 log = get_logger(__name__)
@@ -107,12 +108,15 @@ class RealtimeClient:
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "instructions": (
-                    "You are VeloVoice, a friendly and efficient voice assistant. "
-                    "Be concise and helpful."
+                    "You are VeloVoice, a friendly voice assistant. "
+                    "IMPORTANT: Keep every response under 2 sentences. "
+                    "This is a real-time voice conversation — be brief, natural, and conversational. "
+                    "Never use lists, markdown, or long explanations."
                 ),
                 "tools": TOOL_DEFINITIONS,
                 "tool_choice": "auto",
                 "turn_detection": None,  # we handle VAD on the client side
+                "input_audio_transcription": {"model": "gpt-4o-mini-transcribe"},
             },
         })
 
@@ -210,6 +214,14 @@ class RealtimeClient:
     async def _dispatch(self, event: dict) -> None:
         """Route an OpenAI event to the appropriate handler."""
         etype = event.get("type", "")
+        log.debug(
+            "openai_event_received",
+            extra={
+                "action": "openai_event_received",
+                "session_id": self._session_id,
+                "metadata": {"event_type": etype},
+            },
+        )
 
         if etype == "response.audio.delta":
             # Forward raw audio bytes to the client browser
@@ -242,6 +254,14 @@ class RealtimeClient:
 
         elif etype == "response.function_call_arguments.done":
             await self._handle_tool_call(event)
+
+        elif etype == "conversation.item.input_audio_transcription.completed":
+            # User speech was transcribed — forward to the frontend
+            user_text = event.get("transcript", "").strip()
+            if user_text:
+                await self._send(
+                    transcript_user(user_text, self._session_id)
+                )
 
         elif etype == "error":
             await self._handle_error(event)

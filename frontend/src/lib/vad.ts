@@ -18,29 +18,37 @@ export class VadController {
 
     this._vad = await MicVAD.new({
       // Explicit asset paths — served by vite-plugin-static-copy from root
-      modelURL: '/silero_vad_legacy.onnx',
-      workletURL: '/vad.worklet.bundle.min.js',
+      baseAssetPath: '/',
       onnxWASMBasePath: '/',
+      model: 'legacy',
       onSpeechStart: () => {
         onSpeechStart()
       },
-      onSpeechEnd: (_audio: Float32Array) => {
+      onSpeechEnd: () => {
         onSpeechEnd()
       },
-      // Tuning parameters could be adjusted here based on real-world testing
+      // Tuning parameters — calibrated for natural speech pauses
       positiveSpeechThreshold: 0.8,
-      negativeSpeechThreshold: 0.8,
-      preSpeechPadFrames: 1,
-      redemptionFrames: 5,
+      negativeSpeechThreshold: 0.5,
+      preSpeechPadMs: 200,
+      redemptionMs: 600,
     })
 
     this._vad.start()
   }
 
-  stop(): void {
+  pause(): void {
+    this._vad?.pause()
+  }
+
+  resume(): void {
+    this._vad?.start()
+  }
+
+  async stop(): Promise<void> {
     if (this._vad) {
-      this._vad.pause()
-      this._vad.destroy()
+      await this._vad.pause()
+      await this._vad.destroy()
       this._vad = null
     }
   }

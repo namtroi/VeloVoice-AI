@@ -54,6 +54,10 @@ def transcript_final(text: str, session_id: str | None = None) -> dict:
     return {"type": "transcript.final", "text": text, "is_final": True, "session_id": session_id}
 
 
+def transcript_user(text: str, session_id: str | None = None) -> dict:
+    return {"type": "transcript.user", "text": text, "session_id": session_id}
+
+
 def response_end(session_id: str | None = None) -> dict:
     return {"type": "response.end", "session_id": session_id}
 
