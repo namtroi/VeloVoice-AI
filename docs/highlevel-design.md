@@ -16,17 +16,26 @@ The system employs a client-server proxy model built on WebSockets. Here is the 
 
 ```mermaid
 graph TD
-    classDef client fill:#f0f9ff,stroke:#0ea5e9,stroke-width:2px;
-    classDef server fill:#fdf4ff,stroke:#d946ef,stroke-width:2px;
-    classDef external fill:#f0fdf4,stroke:#22c55e,stroke-width:2px;
+    %% Define component colors by type
+    classDef ui fill:#bfdbfe,stroke:#2563eb,stroke-width:2px,color:#000;
+    classDef audio fill:#fbcfe8,stroke:#db2777,stroke-width:2px,color:#000;
+    classDef logic fill:#fef08a,stroke:#ca8a04,stroke-width:2px,color:#000;
+    classDef network fill:#bbf7d0,stroke:#16a34a,stroke-width:2px,color:#000;
+    classDef storage fill:#e5e5e5,stroke:#525252,stroke-width:2px,color:#000;
+    classDef external fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000;
+
+    %% Subgraph styling
+    style Client fill:#eff6ff,stroke:#93c5fd,stroke-width:2px,stroke-dasharray: 5 5
+    style Backend fill:#fdf4ff,stroke:#f0abfc,stroke-width:2px,stroke-dasharray: 5 5
+    style External fill:#fff7ed,stroke:#fdba74,stroke-width:2px,stroke-dasharray: 5 5
 
     %% Frontend Components
     subgraph Client ["Browser (React + Vite SPA)"]
-        UI["UI & Client State (Zustand)"]:::client
-        AudioCap["Audio Capture (AudioWorklet)"]:::client
-        AudioPlay["Audio Playback (AudioWorklet)"]:::client
-        VAD["Voice Activity Detection (@ricky0123/vad-web)"]:::client
-        WSClient["WebSocket Client (JSON + Binary)"]:::client
+        UI["UI & Client State (Zustand)"]:::ui
+        AudioCap["Audio Capture (AudioWorklet)"]:::audio
+        AudioPlay["Audio Playback (AudioWorklet)"]:::audio
+        VAD["Voice Activity Detection (@ricky0123/vad-web)"]:::logic
+        WSClient["WebSocket Client (JSON + Binary)"]:::network
 
         UI <--> WSClient
         AudioCap --> VAD
@@ -37,9 +46,9 @@ graph TD
 
     %% Backend Components
     subgraph Backend ["Server (FastAPI + Asyncio)"]
-        WSServer["WebSocket Handler (Message Routing)"]:::server
-        SessionStore[("In-Memory Store (Session Metadata & Context)")]:::server
-        Proxy["Realtime Client (Audio Proxy & Events)"]:::server
+        WSServer["WebSocket Handler (Message Routing)"]:::network
+        SessionStore[("In-Memory Store (Session Metadata & Context)")]:::storage
+        Proxy["Realtime Client (Audio Proxy & Events)"]:::network
 
         WSServer <--> Proxy
         WSServer <--> SessionStore
