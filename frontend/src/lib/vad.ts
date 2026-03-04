@@ -20,7 +20,7 @@ export class VadController {
       onSpeechStart: () => {
         onSpeechStart()
       },
-      onSpeechEnd: (audio: Float32Array) => {
+      onSpeechEnd: (_audio: Float32Array) => {
         onSpeechEnd()
       },
       // Tuning parameters could be adjusted here based on real-world testing

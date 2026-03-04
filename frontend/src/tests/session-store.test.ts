@@ -107,13 +107,29 @@ describe('useSessionStore — addMessage()', () => {
     useSessionStore.getState().addMessage('user', 'Hello')
     const { transcript } = useSessionStore.getState()
     expect(transcript).toHaveLength(1)
-    expect(transcript[0]).toEqual({ role: 'user', text: 'Hello' })
+    // toMatchObject — id field is present but value is not checked here
+    expect(transcript[0]).toMatchObject({ role: 'user', text: 'Hello' })
   })
 
   it('appends an assistant message', () => {
     useSessionStore.getState().addMessage('assistant', 'Hi there!')
     const { transcript } = useSessionStore.getState()
-    expect(transcript[0]).toEqual({ role: 'assistant', text: 'Hi there!' })
+    expect(transcript[0]).toMatchObject({ role: 'assistant', text: 'Hi there!' })
+  })
+
+  it('addMessage with role assistant stores assistant role', () => {
+    const { addMessage } = useSessionStore.getState()
+    addMessage('assistant', 'Hello from AI')
+    const { transcript } = useSessionStore.getState()
+    expect(transcript.at(-1)?.role).toBe('assistant')
+  })
+
+  it('each message has a unique numeric id', () => {
+    useSessionStore.getState().addMessage('user', 'A')
+    useSessionStore.getState().addMessage('assistant', 'B')
+    const { transcript } = useSessionStore.getState()
+    expect(typeof transcript[0].id).toBe('number')
+    expect(transcript[0].id).not.toBe(transcript[1].id)
   })
 
   it('preserves message order across multiple calls', () => {

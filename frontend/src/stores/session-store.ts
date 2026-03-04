@@ -8,7 +8,11 @@ import { create } from 'zustand'
 
 export type SessionStatus = 'idle' | 'connected' | 'listening' | 'processing' | 'speaking'
 
+// Module-level counter for stable React keys — never resets, always increasing.
+let _messageId = 0
+
 export interface Message {
+  id: number
   role: 'user' | 'assistant'
   text: string
 }
@@ -45,7 +49,9 @@ export const useSessionStore = create<SessionState>((set) => ({
   setSessionId: (id) => set({ sessionId: id }),
 
   addMessage: (role, text) =>
-    set((s) => ({ transcript: [...s.transcript, { role, text }] })),
+    set((s) => ({
+      transcript: [...s.transcript, { id: _messageId++, role, text }],
+    })),
 
   setStatus: (status) => set({ status }),
 

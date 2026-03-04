@@ -243,6 +243,25 @@ class TestEventForwarding:
         assert len(ends) == 1
 
     @pytest.mark.asyncio
+    async def test_transcript_partial_includes_is_final_false(self):
+        events = [{"type": "response.audio_transcript.delta", "delta": "Hi"}]
+        client = RealtimeClient("sid", AsyncMock())
+        sent = await collect_sent(client, events)
+        partials = [m for m in sent if m.get("type") == "transcript.partial"]
+        assert partials[0]["is_final"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcript_final_includes_is_final_true(self):
+        events = [
+            {"type": "response.audio_transcript.delta", "delta": "Hi"},
+            {"type": "response.done"},
+        ]
+        client = RealtimeClient("sid", AsyncMock())
+        sent = await collect_sent(client, events)
+        finals = [m for m in sent if m.get("type") == "transcript.final"]
+        assert finals[0]["is_final"] is True
+
+    @pytest.mark.asyncio
     async def test_response_done_resets_transcript_accumulator(self):
         events = [
             {"type": "response.audio_transcript.delta", "delta": "Turn 1"},

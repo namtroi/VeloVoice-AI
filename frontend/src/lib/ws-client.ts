@@ -24,11 +24,13 @@ const SessionReadySchema = z.object({
 const TranscriptPartialSchema = z.object({
   type: z.literal('transcript.partial'),
   text: z.string(),
+  is_final: z.literal(false),
 })
 
 const TranscriptFinalSchema = z.object({
   type: z.literal('transcript.final'),
   text: z.string(),
+  is_final: z.literal(true),
 })
 
 const ResponseEndSchema = z.object({

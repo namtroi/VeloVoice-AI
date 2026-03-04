@@ -25,14 +25,6 @@ def mock_realtime():
     with patch("ws.handler.RealtimeClient", return_value=mock):
         yield mock
 
-@pytest.fixture(autouse=True)
-def clear_store():
-    """Reset session store between tests."""
-    session_store._sessions.clear()
-    yield
-    session_store._sessions.clear()
-
-
 @pytest.fixture()
 def client():
     return TestClient(app)
@@ -94,6 +86,13 @@ class TestConnectionLifecycle:
         assert session_store.get(sid) is None
 
     def test_session_start_with_custom_config(self, client):
+        with client.websocket_connect("/ws") as ws:
+            send_json(ws, {"type": "session.start", "config": {"voice": "echo"}})
+            msg = recv_json(ws)
+            assert msg["type"] == "session.ready"
+
+    def test_session_start_ignores_unknown_config_fields(self, client):
+        # Old clients that still send `language` must not get a schema error
         with client.websocket_connect("/ws") as ws:
             send_json(ws, {"type": "session.start", "config": {"language": "fr", "voice": "echo"}})
             msg = recv_json(ws)

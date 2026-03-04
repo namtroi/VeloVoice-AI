@@ -60,7 +60,7 @@ export default function App() {
         setStatus('processing')
       },
       onTranscriptFinal(text: string) {
-        addMessage('user', text)
+        addMessage('assistant', text)
         setStatus('connected')
       },
       onResponseAudio(chunk: ArrayBuffer) {

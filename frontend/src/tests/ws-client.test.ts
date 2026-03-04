@@ -154,13 +154,13 @@ describe('WsClient — message routing', () => {
 
   it('calls onTranscriptPartial with text', () => {
     const { handlers, ws } = setup()
-    ws.simulateMessage({ type: 'transcript.partial', text: 'hell' })
+    ws.simulateMessage({ type: 'transcript.partial', text: 'hell', is_final: false })
     expect(handlers.onTranscriptPartial).toHaveBeenCalledWith('hell')
   })
 
   it('calls onTranscriptFinal with text', () => {
     const { handlers, ws } = setup()
-    ws.simulateMessage({ type: 'transcript.final', text: 'hello world' })
+    ws.simulateMessage({ type: 'transcript.final', text: 'hello world', is_final: true })
     expect(handlers.onTranscriptFinal).toHaveBeenCalledWith('hello world')
   })
 
@@ -185,6 +185,26 @@ describe('WsClient — message routing', () => {
   it('ignores unknown message types without throwing', () => {
     const { ws } = setup()
     expect(() => ws.simulateMessage({ type: 'unknown.future.event' })).not.toThrow()
+  })
+
+  it('rejects transcript.partial message missing is_final', () => {
+    // Import ServerMessageSchema indirectly by checking that a partial without
+    // is_final does not trigger onTranscriptPartial
+    const { handlers, ws } = setup()
+    ws.simulateMessage({ type: 'transcript.partial', text: 'hi' })
+    expect(handlers.onTranscriptPartial).not.toHaveBeenCalled()
+  })
+
+  it('accepts transcript.partial with is_final: false', () => {
+    const { handlers, ws } = setup()
+    ws.simulateMessage({ type: 'transcript.partial', text: 'hi', is_final: false })
+    expect(handlers.onTranscriptPartial).toHaveBeenCalledWith('hi')
+  })
+
+  it('accepts transcript.final with is_final: true', () => {
+    const { handlers, ws } = setup()
+    ws.simulateMessage({ type: 'transcript.final', text: 'hello world', is_final: true })
+    expect(handlers.onTranscriptFinal).toHaveBeenCalledWith('hello world')
   })
 
   it('forwards binary ArrayBuffer frames to onResponseAudio', () => {

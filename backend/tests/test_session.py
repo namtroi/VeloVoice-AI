@@ -143,6 +143,12 @@ async def test_concurrent_creates():
     assert store.active_count == 50
 
 
+def test_session_store_has_no_lock():
+    """The dead asyncio.Lock must have been removed from SessionStore.__init__."""
+    store = SessionStore()
+    assert not hasattr(store, '_lock')
+
+
 @pytest.mark.asyncio
 async def test_concurrent_touch_and_delete():
     store = make_store()

@@ -104,7 +104,6 @@ Server responds with `session.ready` or `error`.
 {
   "type": "session.start",
   "config": {
-    "language": "en",
     "voice": "alloy"
   }
 }
@@ -112,10 +111,9 @@ Server responds with `session.ready` or `error`.
 
 **Fields:**
 
-| Field             | Type   | Required | Default  | Description                                           |
-|-------------------|--------|----------|----------|-------------------------------------------------------|
-| `config.language` | string | No       | `"en"`   | BCP-47 language tag. V1: English only.                |
-| `config.voice`    | string | No       | `"alloy"`| OpenAI TTS voice. Options: `alloy \| echo \| fable \| onyx \| nova \| shimmer` |
+| Field          | Type   | Required | Default  | Description                                                               |
+|----------------|--------|----------|----------|---------------------------------------------------------------------------|
+| `config.voice` | string | No       | `"alloy"`| OpenAI TTS voice. Options: `alloy \| echo \| fable \| onyx \| nova \| shimmer` |
 
 ---
 

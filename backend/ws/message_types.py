@@ -6,7 +6,7 @@ Server → Client messages are plain dicts (serialised with json.dumps).
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Client → Server models
@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 
 class SessionStartConfig(BaseModel):
-    language: str = "en"
+    # extra="ignore" so old clients that still send `language` don't get a schema error
+    model_config = ConfigDict(extra="ignore")
     voice: str = "alloy"
 
 
@@ -46,11 +47,11 @@ def session_ready(session_id: str) -> dict:
 
 
 def transcript_partial(text: str, session_id: str | None = None) -> dict:
-    return {"type": "transcript.partial", "text": text, "session_id": session_id}
+    return {"type": "transcript.partial", "text": text, "is_final": False, "session_id": session_id}
 
 
 def transcript_final(text: str, session_id: str | None = None) -> dict:
-    return {"type": "transcript.final", "text": text, "session_id": session_id}
+    return {"type": "transcript.final", "text": text, "is_final": True, "session_id": session_id}
 
 
 def response_end(session_id: str | None = None) -> dict:

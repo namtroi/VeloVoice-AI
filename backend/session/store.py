@@ -23,7 +23,6 @@ class SessionData:
 class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionData] = {}
-        self._lock = asyncio.Lock()
 
     def create(self, session_id: str) -> SessionData:
         """Create and register a new session."""

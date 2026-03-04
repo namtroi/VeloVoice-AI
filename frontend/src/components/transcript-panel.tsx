@@ -46,9 +46,9 @@ export function TranscriptPanel({ transcript, status }: TranscriptPanelProps) {
           </div>
         )}
 
-        {transcript.map((msg, i) => (
+        {transcript.map((msg) => (
           <div
-            key={i}
+            key={msg.id}
             className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
           >
             <div
