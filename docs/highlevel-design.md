@@ -22,11 +22,11 @@ graph TD
 
     %% Frontend Components
     subgraph Client ["Browser (React + Vite SPA)"]
-        UI["UI & Client State\n(Zustand)"]:::client
-        AudioCap["Audio Capture\n(AudioWorklet)"]:::client
-        AudioPlay["Audio Playback\n(AudioWorklet)"]:::client
-        VAD["Voice Activity Detection\n(@ricky0123/vad-web)"]:::client
-        WSClient["WebSocket Client\n(JSON + Binary)"]:::client
+        UI["UI & Client State (Zustand)"]:::client
+        AudioCap["Audio Capture (AudioWorklet)"]:::client
+        AudioPlay["Audio Playback (AudioWorklet)"]:::client
+        VAD["Voice Activity Detection (@ricky0123/vad-web)"]:::client
+        WSClient["WebSocket Client (JSON + Binary)"]:::client
 
         UI <--> WSClient
         AudioCap --> VAD
@@ -37,9 +37,9 @@ graph TD
 
     %% Backend Components
     subgraph Backend ["Server (FastAPI + Asyncio)"]
-        WSServer["WebSocket Handler\n(Message Routing)"]:::server
-        SessionStore[("In-Memory Store\n(Session Metadata & Context)")]:::server
-        Proxy["Realtime Client\n(Audio Proxy & Events)"]:::server
+        WSServer["WebSocket Handler (Message Routing)"]:::server
+        SessionStore[("In-Memory Store (Session Metadata & Context)")]:::server
+        Proxy["Realtime Client (Audio Proxy & Events)"]:::server
 
         WSServer <--> Proxy
         WSServer <--> SessionStore
@@ -47,12 +47,12 @@ graph TD
 
     %% External Dependencies
     subgraph External ["External Services"]
-        OpenAI["OpenAI Realtime API\n(STT + LLM + TTS)"]:::external
+        OpenAI["OpenAI Realtime API (STT + LLM + TTS)"]:::external
     end
 
     %% Connections
-    WSClient -- "WebSocket\n(Control + Audio Data)" <--> WSServer
-    Proxy -- "WebSocket\n(Control + Audio Data)" <--> OpenAI
+    WSClient -- "WebSocket (Control + Audio Data)" <--> WSServer
+    Proxy -- "WebSocket (Control + Audio Data)" <--> OpenAI
 
 ```
 
