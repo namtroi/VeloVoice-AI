@@ -17,6 +17,10 @@ export class VadController {
     if (this._vad) return
 
     this._vad = await MicVAD.new({
+      // Explicit asset paths — served by vite-plugin-static-copy from root
+      modelURL: '/silero_vad_legacy.onnx',
+      workletURL: '/vad.worklet.bundle.min.js',
+      onnxWASMBasePath: '/',
       onSpeechStart: () => {
         onSpeechStart()
       },
