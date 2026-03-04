@@ -52,6 +52,7 @@ def patch_connect(ws_mock: MagicMock):
             "pipeline.realtime_client.settings",
             openai_api_key="test-key",
             openai_model="gpt-4o-realtime-preview",
+            history_max_turns=20,
         ),
     )
 
@@ -114,7 +115,7 @@ class TestConnect:
         client = RealtimeClient("sid", AsyncMock())
         fail_mock = AsyncMock(side_effect=OSError("refused"))
         with patch("pipeline.realtime_client.websockets.connect", new=fail_mock):
-            with patch("pipeline.realtime_client.settings", openai_api_key="k", openai_model="m"):
+            with patch("pipeline.realtime_client.settings", openai_api_key="k", openai_model="m", history_max_turns=20):
                 with pytest.raises(RealtimeClientError):
                     await client.connect()
 
